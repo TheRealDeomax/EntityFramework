@@ -711,13 +711,13 @@ namespace Microsoft.EntityFrameworkCore.Query
                         if (groupJoin)
                         {
                             var outerJoinOrderingExtractor = new OuterJoinOrderingExtractor();
-
                             outerJoinOrderingExtractor.Visit(predicate);
 
+                            var previousOrderingCount = previousSelectExpression.OrderBy.Count;
                             foreach (var expression in outerJoinOrderingExtractor.Expressions)
                             {
-                                previousSelectExpression
-                                    .AddToOrderBy(new Ordering(expression, OrderingDirection.Asc));
+                                previousSelectExpression.AddToOrderBy(
+                                    new Ordering(expression, OrderingDirection.Asc));
                             }
 
                             var additionalFromClause
@@ -784,6 +784,11 @@ namespace Microsoft.EntityFrameworkCore.Query
                                     QueriesBySource.Remove(joinClause);
 
                                     operatorToFlatten = LinqOperatorProvider.Join;
+
+                                    if (previousOrderingCount != previousSelectExpression.OrderBy.Count)
+                                    {
+                                        previousSelectExpression.RemoveRangeFromOrderBy(previousOrderingCount);
+                                    }
                                 }
                             }
                         }
@@ -869,17 +874,39 @@ namespace Microsoft.EntityFrameworkCore.Query
 
                 if (binaryExpression != null)
                 {
-                    switch (binaryExpression.NodeType)
-                    {
-                        case ExpressionType.Equal:
-                            _expressions.Add(binaryExpression.Left.RemoveConvert());
-                            return expression;
-                        case ExpressionType.AndAlso:
-                            return VisitBinary(binaryExpression);
-                    }
+                    return VisitBinary(binaryExpression);
                 }
 
                 return expression;
+            }
+
+            protected override Expression VisitBinary(BinaryExpression node)
+            {
+                if (node.NodeType == ExpressionType.Equal)
+                {
+                    var leftColumn = node.Left.RemoveConvert().TryGetColumnExpression();
+                    var rightColumn = node.Right.RemoveConvert().TryGetColumnExpression();
+                    if (leftColumn != null && rightColumn != null && leftColumn.Property.IsForeignKey() && rightColumn.Property.IsPrimaryKey())
+                    {
+                        var foreignKeyPrincipalTypes = leftColumn.Property.GetContainingForeignKeys().Select(k => k.PrincipalEntityType.RootType());
+                        var primaryKeyDeclaringType = rightColumn.Property.DeclaringEntityType;
+                        if (foreignKeyPrincipalTypes.Contains(primaryKeyDeclaringType))
+                        {
+                            return node;
+                        }
+                    }
+
+                    _expressions.Add(node.Left.RemoveConvert());
+
+                    return node;
+                }
+
+                if (node.NodeType == ExpressionType.AndAlso)
+                {
+                    return base.VisitBinary(node);
+                }
+
+                return node;
             }
         }
 
